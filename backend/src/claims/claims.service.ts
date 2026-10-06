@@ -1,16 +1,19 @@
 import {
   Injectable,
-  InternalServerErrorException,
-  ServiceUnavailableException,
+  HttpStatus,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ClaimStatus } from '@prisma/client';
 import OpenAI from 'openai';
 import { z } from 'zod';
 import { PrismaService } from '../prisma/prisma.service';
+import { ApiException } from '../common/api-exception';
+import {
+  ASSESSMENT_PROMPT_VERSION,
+  ASSESSMENT_SYSTEM_PROMPT,
+} from './assessment.prompt';
 import { AssessClaimDto } from './dto/assess-claim.dto';
 
-const PROMPT_VERSION = 'claim-assessment-v1';
 const assessmentSchema = z.object({
   justified: z.boolean(),
   confidenceScore: z.number().min(0).max(1),
@@ -67,7 +70,7 @@ export class ClaimsService {
           limitations: assessment.limitations,
           humanReviewRequired: true,
           model: this.model,
-          promptVersion: PROMPT_VERSION,
+          promptVersion: ASSESSMENT_PROMPT_VERSION,
         },
       });
 
@@ -130,31 +133,68 @@ export class ClaimsService {
         ],
       });
     } catch (error) {
-      throw new ServiceUnavailableException('The assessment provider is currently unavailable.', {
-        cause: error,
-      });
+      throw this.toProviderException(error);
     }
 
     const content = response.choices[0]?.message.content;
     if (!content) {
-      throw new InternalServerErrorException('The assessment provider returned an empty response.');
+      throw new ApiException(
+        HttpStatus.BAD_GATEWAY,
+        'INVALID_ASSESSMENT_RESPONSE',
+        'The assessment provider returned an empty response.',
+      );
     }
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(content);
     } catch (error) {
-      throw new InternalServerErrorException('The assessment provider returned invalid JSON.', {
-        cause: error,
-      });
+      throw new ApiException(
+        HttpStatus.BAD_GATEWAY,
+        'INVALID_ASSESSMENT_RESPONSE',
+        'The assessment provider returned an invalid response.',
+        { cause: error },
+      );
     }
 
     const result = assessmentSchema.safeParse(parsed);
     if (!result.success) {
-      throw new InternalServerErrorException('The assessment provider returned an invalid result.', {
-        cause: result.error,
-      });
+      throw new ApiException(
+        HttpStatus.BAD_GATEWAY,
+        'INVALID_ASSESSMENT_RESPONSE',
+        'The assessment provider returned an invalid response.',
+        { cause: result.error },
+      );
     }
     return result.data;
+  }
+
+  private toProviderException(error: unknown): ApiException {
+    if (error instanceof OpenAI.APIError) {
+      if (error.status === 401 || error.status === 403) {
+        return new ApiException(
+          HttpStatus.INTERNAL_SERVER_ERROR,
+          'ASSESSMENT_PROVIDER_MISCONFIGURED',
+          'The assessment service is incorrectly configured.',
+          { cause: error },
+        );
+      }
+
+      if (error.status === 400) {
+        return new ApiException(
+          HttpStatus.BAD_GATEWAY,
+          'ASSESSMENT_PROVIDER_REJECTED_REQUEST',
+          'The assessment provider could not process this request.',
+          { cause: error },
+        );
+      }
+    }
+
+    return new ApiException(
+      HttpStatus.SERVICE_UNAVAILABLE,
+      'ASSESSMENT_PROVIDER_UNAVAILABLE',
+      'The assessment provider is temporarily unavailable. Please try again.',
+      { cause: error },
+    );
   }
 }

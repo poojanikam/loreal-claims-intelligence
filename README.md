@@ -21,6 +21,8 @@ The design is grounded in the interfaces and engineering guidance of the chosen 
 - NestJS modules/controllers/services keep HTTP handling separate from assessment and persistence.
 - Prisma models the one-to-many relationship between a claim and its assessment history, and provides a database transaction for saving them together.
 - OpenAI Chat Completions structured JSON output constrains the model response to a machine-readable shape; the API response is still parsed and validated before persistence.
+- The prompt and its version are kept together in source control for review and change history; production prompt revisions should be benchmarked against evaluator-labelled examples before rollout.
+- A global NestJS exception filter returns stable error codes and a consistent response shape, while withholding internal/provider diagnostics from clients.
 - React manages request, loading, error, and result states explicitly; the API origin is configurable for local development.
 - The assessment prompt distinguishes statistical significance from practical relevance and instructs the model not to infer missing information. The result includes limitations and a human-review flag rather than presenting an AI score as proof.
 
@@ -82,7 +84,7 @@ Successful response (`201 Created`):
 }
 ```
 
-Invalid input returns `400`; a missing `OPENAI_API_KEY` prevents the API from starting, and a failed provider call returns `503`. Scores are model-estimated confidence, not statistical confidence or a probability of regulatory acceptance.
+Errors use a consistent JSON envelope, for example `400 BAD_REQUEST` with validation details, `502 ASSESSMENT_PROVIDER_REJECTED_REQUEST` for a provider request/response problem, `503 ASSESSMENT_PROVIDER_UNAVAILABLE`, or a generic `500 INTERNAL_SERVER_ERROR`. Invalid provider credentials produce `500 ASSESSMENT_PROVIDER_MISCONFIGURED`; a missing `OPENAI_API_KEY` prevents the API from starting. Internal/provider diagnostics are not returned to the client. Scores are model-estimated confidence, not statistical confidence or a probability of regulatory acceptance.
 
 ## Run locally
 
